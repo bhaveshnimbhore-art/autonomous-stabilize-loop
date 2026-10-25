@@ -136,6 +136,22 @@ def failing_test_name(output: str) -> str:
     return ""
 
 
+def failure_detail(output: str, max_lines: int = 12) -> str:
+    """Concise error excerpt for a failed run: the FAILED line plus the
+    pytest 'E' assertion/traceback lines (the actual error, not just the
+    test name). Falls back to the last non-empty output lines so a
+    failure with no 'E' lines (collection/import errors, timeouts) still
+    reports something concrete instead of a bare summary line."""
+    lines = [line.strip() for line in output.splitlines()]
+    failed = [line for line in lines if line.startswith("FAILED ") or line.startswith("ERROR ")]
+    err_lines = [line for line in lines if line.startswith("E ")]
+    detail = failed + err_lines
+    if detail:
+        return "\n".join(detail[:max_lines])
+    tail = [line for line in lines if line][-5:]
+    return "\n".join(tail)
+
+
 def compile_check(app_dir: Path) -> bool:
     """py_compile only — used as a sanity check, NEVER as a pass criterion."""
     for path in app_dir.rglob("*.py"):
@@ -164,17 +180,20 @@ def stabilize(
     original = _snapshot(app_dir)
     attempts: list[dict] = []
     last_failure = ""
+    last_detail = ""
 
     for attempt in range(1, max_attempts + 1):
         returncode, stdout, stderr, timed_out = run_tests(app_dir, timeout)
         output = stdout + stderr
         failure = failing_test_name(output) or ("timeout" if timed_out else "")
+        detail = failure_detail(output) if returncode != 0 else ""
         attempts.append(
             {
                 "attempt": attempt,
                 "returncode": returncode,
                 "timed_out": timed_out,
                 "failing": failure,
+                "detail": detail,
             }
         )
         if returncode == 0:
@@ -183,9 +202,11 @@ def stabilize(
                 "attempts": attempt,
                 "attempt_log": attempts,
                 "failing": "",
+                "failure_detail": "",
                 "restored": False,
             }
         last_failure = failure or output.strip().splitlines()[-1] if output.strip() else "unknown failure"
+        last_detail = detail
         print(f"Attempt {attempt}/{max_attempts}: FAILED — {last_failure}", file=sys.stderr)
         if attempt == max_attempts:
             break
@@ -206,6 +227,7 @@ def stabilize(
         "attempts": len(attempts),
         "attempt_log": attempts,
         "failing": last_failure,
+        "failure_detail": last_detail,
         "restored": True,
     }
 
@@ -230,6 +252,9 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     print(f"NOT STABLE. Original code restored: {result.get('restored')}.")
     print(f"Failing: {result.get('failing') or result.get('error', 'unknown')}")
+    if result.get("failure_detail"):
+        print("Detail:")
+        print(result["failure_detail"])
     return 1 if "error" not in result else 2
 
 

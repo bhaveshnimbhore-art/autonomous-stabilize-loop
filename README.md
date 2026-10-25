@@ -42,7 +42,9 @@ python3 stabilize.py <app_dir> [--max-attempts 5] [--timeout 120]
   anything). The loop judges every fixer the same way: full suite pass,
   or it does not count.
 - `--report`: JSON report with attempts, failing test, and whether the
-  original code was restored.
+  original code was restored — plus `failure_detail`, the actual error
+  excerpt (FAILED line + pytest `E` assertion lines), so a failure can
+  be diagnosed from the report alone.
 
 ## Safety
 

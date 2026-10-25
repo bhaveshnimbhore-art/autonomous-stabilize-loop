@@ -1,5 +1,16 @@
 # Changelog
 
+## v2.1.0 — 2026-10-26
+
+- Better error reporting: a failed run now reports the actual error
+  excerpt, not just the failing test name. The JSON report gains
+  `failure_detail` (top level, plus `detail` per attempt) holding the
+  FAILED line and the pytest `E` assertion/traceback lines, and the CLI
+  prints it after `Failing:`. Failures with no `E` lines (collection or
+  import errors, timeouts) fall back to the last output lines, so a
+  failure never reports as a bare summary line. No change to fix
+  behaviour, pass criteria, or the CLI.
+
 ## v2.0.0 — 2026-10-26
 
 - Full-suite-only pass criterion, enforced in code (compile never counts).
