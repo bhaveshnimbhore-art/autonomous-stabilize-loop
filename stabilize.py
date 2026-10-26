@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Write-test-stabilize loop, v2.6 — free, no vendor lock-in.
+"""Write-test-stabilize loop, v2.7 — free, no vendor lock-in.
 
 Usage:
     python3 stabilize.py demo-app
@@ -122,6 +122,20 @@ def run_fixer(app_dir: Path, error_log: str, fixer_script: str | None) -> bool:
 # recorded by type via lstat and never opened or followed, so a
 # fixer-created one counts as a change and is removed on failure,
 # and a file replaced by one is unlinked before it is written back.
+#
+# v2.7 extends it to the app directory itself: the snapshot also
+# records the root directory's mode, under the key ".". v2.6 recorded
+# every entry inside the app but not the app directory, so a fixer
+# that chmod'ed the app directory (e.g. 0o750 -> 0o777) left that
+# change behind while the report still claimed the original code
+# was restored — the same untrue-claim hole v2.2-v2.6 closed for
+# contents, shape, modes, and special files. The root entry flows
+# through the same machinery as any other directory: a root-only
+# chmod counts as a fixer change, the restore makes the root
+# owner-writable first (so a fixer that made it read-only cannot
+# block the content restore), and the exact original mode is put
+# back in the final pass — and the verification compares it, so a
+# leftover root-mode change now reports restored False.
 _IGNORED_PARTS = {
     "__pycache__",
     ".pytest_cache",
@@ -137,8 +151,19 @@ _IGNORED_PARTS = {
 
 def _snapshot(app_dir: Path) -> dict[str, tuple]:
     """Snapshot every app entry — file, directory, symlink, or special
-    file (FIFO/socket/device) — by relative path."""
+    file (FIFO/socket/device) — by relative path, plus the app
+    directory itself under "." (its mode only, v2.7)."""
     out: dict[str, tuple] = {}
+    # The app directory itself, first: the restore makes it
+    # owner-writable before touching contents (see _restore), and
+    # the final pass puts back its exact mode. Guarded: if the app
+    # directory was deleted outright, there is no root mode to record
+    # and the entries below still describe what must come back.
+    try:
+        if app_dir.is_dir():
+            out["."] = ("dir", None, app_dir.stat().st_mode & 0o777)
+    except OSError:
+        pass
     for path in sorted(app_dir.rglob("*")):
         if _IGNORED_PARTS.intersection(path.parts):
             continue

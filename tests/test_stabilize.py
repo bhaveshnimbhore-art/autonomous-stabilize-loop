@@ -278,6 +278,34 @@ def test_incomplete_restore_is_reported_not_claimed(tmp_path):
     assert (app / "app.py").read_text() == original
 
 
+def test_app_root_dir_mode_restored_on_failure(tmp_path):
+    # v2.6 snapshotted every entry inside the app but not the app
+    # directory itself, so a fixer that chmod'ed the app directory
+    # left that change behind while the report still claimed the
+    # original code was restored. The root mode must come back
+    # exactly, like any other directory's mode.
+    app = tmp_path / "app"
+    app.mkdir()
+    (app / "app.py").write_text("def total(price, qty, tax_rate):\n    return 0\n")
+    (app / "test_app.py").write_text(
+        "from app import total\n\ndef test_total():\n    assert total(100, 2, 0.10) == 220\n"
+    )
+    os.chmod(app, 0o750)
+    original = (app / "app.py").read_text()
+    fixer = write_fixer(
+        tmp_path,
+        "import os\n"
+        "os.chmod(app_dir, 0o777)\n"
+        "(app_dir / 'app.py').write_text('def total(price, qty, tax_rate):\\n    return 1\\n')\n",
+    )
+    result, data = run_loop(app, tmp_path, fixer_script=fixer)
+    assert result.returncode != 0
+    assert data["stable"] is False
+    assert data["restored"] is True
+    assert (app / "app.py").read_text() == original
+    assert app.stat().st_mode & 0o777 == 0o750
+
+
 def test_missing_app_dir_is_usage_error(tmp_path):
     result = subprocess.run(
         [sys.executable, str(STABILIZE), str(tmp_path / "nope")],

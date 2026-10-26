@@ -1,5 +1,23 @@
 # Changelog
 
+## v2.7.0 — 2026-10-26
+
+- Safety fix, no behaviour change for passing runs: the snapshot and
+  restore now cover the app directory itself, not just the entries
+  inside it. A fixer that chmod'ed the app directory (e.g. 0o750 to
+  0o777) used to leave that change behind while the report still
+  claimed the original code was restored — the last untrue-claim
+  hole in the chain v2.2–v2.6 closed for contents, shape, modes,
+  and special files. The root mode is recorded under "." and flows
+  through the same machinery as any other directory: a root-only
+  chmod counts as a fixer change, the restore makes the root
+  owner-writable first (so a fixer that made it read-only cannot
+  block the content restore), the exact original mode is put back
+  in the final pass, and the verification compares it — a leftover
+  root-mode change now reports restored False instead of True.
+  One new test proves it: a failed run restores a chmod'ed app
+  directory's original mode.
+
 ## v2.6.0 — 2026-10-26
 
 - Safety fix, no behaviour change for passing runs: the restore is now

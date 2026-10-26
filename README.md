@@ -50,7 +50,8 @@ python3 stabilize.py <app_dir> [--max-attempts 5] [--timeout 120]
 
 - Original code — every app file, directory, symlink, and special
   file (FIFO, socket, device node), not just Python files — is
-  snapshotted before any fix. On final failure it is restored, and
+  snapshotted before any fix, along with the app directory itself
+  (its permission bits, v2.7). On final failure it is restored, and
   files, directories, symlinks, and special files a fixer created
   are deleted. Symlinks are recorded by target, never followed, and
   special files are recorded by type and never opened — a file a
@@ -80,7 +81,7 @@ python3 stabilize.py <app_dir> [--max-attempts 5] [--timeout 120]
 python3 -m pytest -q tests/
 ```
 
-12 tests: clean app passes first try, buggy app is fixed, an unfixable
+13 tests: clean app passes first try, buggy app is fixed, an unfixable
 app is restored unchanged with its failing test named, an unfixable
 report carries the error detail, a missing app dir is a usage error,
 a data-file-only fix counts and passes, a failed run restores
@@ -91,7 +92,8 @@ contents and its original permission bits, a failed run removes a
 fixer-created FIFO, a failed run puts back a file a fixer
 replaced with a FIFO instead of hanging on the restore, and a
 failed run whose restore cannot finish reports `restored: false`
-and names the leftover directory instead of claiming it restored.
+and names the leftover directory instead of claiming it restored, and a
+failed run restores a chmod'ed app directory's original mode.
 
 ## v1 → v2 changes
 
