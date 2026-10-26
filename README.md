@@ -72,6 +72,9 @@ python3 stabilize.py <app_dir> [--max-attempts 5] [--timeout 120]
   count as a mismatch.)
 - Every attempt runs the full suite, never just the failing test.
 - Each pytest run has a timeout, so a hanging test cannot hang the loop.
+  A run that cannot even start (a fixer deleted the app directory, or
+  replaced it with a file) is a failed run, not a crash: the loop still
+  restores the original code and writes its report.
 - Exit codes: `0` = stable, `1` = could not stabilize (code restored),
   `2` = usage error (missing dir, no tests found).
 
@@ -81,7 +84,7 @@ python3 stabilize.py <app_dir> [--max-attempts 5] [--timeout 120]
 python3 -m pytest -q tests/
 ```
 
-13 tests: clean app passes first try, buggy app is fixed, an unfixable
+15 tests: clean app passes first try, buggy app is fixed, an unfixable
 app is restored unchanged with its failing test named, an unfixable
 report carries the error detail, a missing app dir is a usage error,
 a data-file-only fix counts and passes, a failed run restores
@@ -93,7 +96,9 @@ fixer-created FIFO, a failed run puts back a file a fixer
 replaced with a FIFO instead of hanging on the restore, and a
 failed run whose restore cannot finish reports `restored: false`
 and names the leftover directory instead of claiming it restored, and a
-failed run restores a chmod'ed app directory's original mode.
+failed run restores a chmod'ed app directory's original mode, and a
+failed run restores an app directory a fixer deleted or replaced with
+a file instead of crashing with no report.
 
 ## v1 → v2 changes
 

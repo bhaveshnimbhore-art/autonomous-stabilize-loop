@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Write-test-stabilize loop, v2.7 — free, no vendor lock-in.
+"""Write-test-stabilize loop, v2.8 — free, no vendor lock-in.
 
 Usage:
     python3 stabilize.py demo-app
@@ -326,6 +326,17 @@ def _restore_mismatches(app_dir: Path, snapshot: dict[str, tuple]) -> list[str]:
     return sorted(mismatches)
 
 
+# v2.8: a test run that cannot even start is a failed run, not a
+# crash. v2.7 crashed here when a fixer deleted the whole app directory
+# (or replaced it with a file): subprocess.run() with cwd=app_dir
+# raised FileNotFoundError, which escaped run_tests, so the loop died
+# with a traceback, no JSON report, and the app left deleted — the
+# worst downgrade of all, and the one case the restore never got to
+# run for. Now an OSError starting the run (missing cwd, cwd not a
+# directory, pytest binary unavailable) returns as returncode 1 with
+# the error in stderr, so the loop proceeds to its normal path: the
+# fixer is judged, then on final failure the original code is restored
+# and verified, and a report is written naming the problem.
 def run_tests(app_dir: Path, timeout: int) -> tuple[int, str, str, bool]:
     """Run the FULL suite. Returns (returncode, stdout, stderr, timed_out)."""
     try:
@@ -337,6 +348,8 @@ def run_tests(app_dir: Path, timeout: int) -> tuple[int, str, str, bool]:
             timeout=timeout,
         )
         return result.returncode, result.stdout, result.stderr, False
+    except OSError as exc:
+        return 1, "", f"test run could not start: {exc}", False
     except subprocess.TimeoutExpired as exc:
         out = exc.stdout.decode() if isinstance(exc.stdout, bytes) else (exc.stdout or "")
         err = exc.stderr.decode() if isinstance(exc.stderr, bytes) else (exc.stderr or "")

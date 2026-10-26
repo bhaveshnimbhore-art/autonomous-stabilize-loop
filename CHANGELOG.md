@@ -1,5 +1,23 @@
 # Changelog
 
+## v2.8.0 — 2026-10-26
+
+- Safety fix, no behaviour change for passing runs or for ordinary
+  failing runs: a test run that cannot even start is now a failed
+  run, not a crash. A fixer that deleted the whole app directory (or
+  replaced it with a file) used to kill the loop outright — the next
+  pytest run raised FileNotFoundError / NotADirectoryError for its
+  missing cwd, which escaped `run_tests`, so no JSON report was ever
+  written and the app was left deleted, the worst downgrade of all
+  and the one case the restore never got to run for. Now an OSError
+  starting a run returns as returncode 1 with the error in stderr,
+  so the loop follows its normal path: the fixer is judged, then on
+  final failure the original code is restored and verified, and a
+  report is written naming the problem ("test run could not
+  start: ..."). Two new tests prove both shapes: a failed run
+  restores an app directory a fixer deleted, and one a fixer
+  replaced with a file.
+
 ## v2.7.0 — 2026-10-26
 
 - Safety fix, no behaviour change for passing runs: the snapshot and

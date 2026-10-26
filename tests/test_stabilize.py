@@ -306,6 +306,62 @@ def test_app_root_dir_mode_restored_on_failure(tmp_path):
     assert app.stat().st_mode & 0o777 == 0o750
 
 
+def test_app_dir_deleted_by_fixer_is_restored_not_crashed(tmp_path):
+    # v2.7 crashed here, not just leaked: a fixer that deleted the
+    # whole app directory made the next pytest run raise
+    # FileNotFoundError (subprocess cwd gone), which escaped run_tests
+    # — no JSON report, and the app left deleted, the worst downgrade.
+    # A run that cannot start must be a failed run: the loop restores
+    # the original code, verifies it, and reports the problem.
+    app = tmp_path / "app"
+    app.mkdir()
+    (app / "app.py").write_text("def total(price, qty, tax_rate):\n    return 0\n")
+    (app / "test_app.py").write_text(
+        "from app import total\n\ndef test_total():\n    assert total(100, 2, 0.10) == 220\n"
+    )
+    original = (app / "app.py").read_text()
+    fixer = write_fixer(
+        tmp_path,
+        "import shutil\n"
+        "shutil.rmtree(app_dir)\n",
+    )
+    result, data = run_loop(app, tmp_path, fixer_script=fixer)
+    assert result.returncode == 1
+    assert data["stable"] is False
+    assert data["restored"] is True
+    assert "could not start" in data["failure_detail"]
+    assert (app / "app.py").read_text() == original
+    assert (app / "test_app.py").exists()
+
+
+def test_app_dir_replaced_by_file_is_restored_not_crashed(tmp_path):
+    # Same v2.7 crash, other shape: a fixer that replaced the app
+    # directory with a regular file made the next pytest run raise
+    # NotADirectoryError for its cwd. The loop must treat it as a
+    # failed run, restore the directory and its files, and report.
+    app = tmp_path / "app"
+    app.mkdir()
+    (app / "app.py").write_text("def total(price, qty, tax_rate):\n    return 0\n")
+    (app / "test_app.py").write_text(
+        "from app import total\n\ndef test_total():\n    assert total(100, 2, 0.10) == 220\n"
+    )
+    original = (app / "app.py").read_text()
+    fixer = write_fixer(
+        tmp_path,
+        "import shutil\n"
+        "if app_dir.is_dir() and not app_dir.is_symlink():\n"
+        "    shutil.rmtree(app_dir)\n"
+        "    app_dir.write_text('replaced by fixer')\n",
+    )
+    result, data = run_loop(app, tmp_path, fixer_script=fixer)
+    assert result.returncode == 1
+    assert data["stable"] is False
+    assert data["restored"] is True
+    assert "could not start" in data["failure_detail"]
+    assert (app / "app.py").read_text() == original
+    assert (app / "test_app.py").exists()
+
+
 def test_missing_app_dir_is_usage_error(tmp_path):
     result = subprocess.run(
         [sys.executable, str(STABILIZE), str(tmp_path / "nope")],
