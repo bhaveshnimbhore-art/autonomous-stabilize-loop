@@ -250,6 +250,34 @@ def test_file_replaced_by_fifo_restored_on_failure(tmp_path):
     assert (app / "app.py").read_text() == original
 
 
+def test_incomplete_restore_is_reported_not_claimed(tmp_path):
+    # v2.5 reported restored=True unconditionally, even when the
+    # restore could not finish: a fixer-created directory holding
+    # only cache artefacts (excluded from the snapshot) cannot be
+    # removed by rmdir, so it survives the "restore". v2.6 verifies
+    # the restore and reports the leftover path instead of claiming
+    # the original code was restored.
+    app = tmp_path / "app"
+    app.mkdir()
+    (app / "app.py").write_text("def total(price, qty, tax_rate):\n    return 0\n")
+    (app / "test_app.py").write_text(
+        "from app import total\n\ndef test_total():\n    assert total(100, 2, 0.10) == 220\n"
+    )
+    original = (app / "app.py").read_text()
+    fixer = write_fixer(
+        tmp_path,
+        "(app_dir / 'app.py').write_text('def total(price, qty, tax_rate):\\n    return 1\\n')\n"
+        "(app_dir / 'newdir' / '__pycache__').mkdir(parents=True)\n"
+        "(app_dir / 'newdir' / '__pycache__' / 'junk.pyc').write_bytes(b'junk')\n",
+    )
+    result, data = run_loop(app, tmp_path, fixer_script=fixer)
+    assert result.returncode != 0
+    assert data["stable"] is False
+    assert data["restored"] is False
+    assert "newdir" in data["restore_mismatch"]
+    assert (app / "app.py").read_text() == original
+
+
 def test_missing_app_dir_is_usage_error(tmp_path):
     result = subprocess.run(
         [sys.executable, str(STABILIZE), str(tmp_path / "nope")],

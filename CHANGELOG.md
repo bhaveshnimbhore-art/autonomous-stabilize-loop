@@ -1,5 +1,26 @@
 # Changelog
 
+## v2.6.0 — 2026-10-26
+
+- Safety fix, no behaviour change for passing runs: the restore is now
+  verified instead of assumed. After the restore, the app tree is
+  re-snapshotted and compared with the original; `restored` in the
+  report is True only when that comparison is clean, and any leftover
+  paths are named in a new `restore_mismatch` list (and printed as a
+  WARNING by the CLI) instead of being silently claimed clean. This
+  closes the last untrue-claim hole in the chain v2.2–v2.5 closed for
+  contents, shape, modes, and special files: a fixer-created directory
+  that cannot be removed because it holds only cache artefacts the
+  snapshot excludes used to survive the "restore" while the report
+  still said restored. A restore that raises is also caught, so it
+  still produces a report naming the problem instead of crashing.
+  One documented exception: a snapshot socket or device node a fixer
+  deleted cannot be recreated, so it is left absent by design and does
+  not count as a mismatch; a snapshot FIFO is recreated. One new test
+  proves it: a failed run whose restore cannot finish reports
+  restored False and names the leftover directory, while the
+  restorable files are still put back.
+
 ## v2.5.0 — 2026-10-26
 
 - Safety fix, no behaviour change for passing runs: the snapshot and

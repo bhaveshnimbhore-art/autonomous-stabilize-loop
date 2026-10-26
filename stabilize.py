@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Write-test-stabilize loop, v2.5 — free, no vendor lock-in.
+"""Write-test-stabilize loop, v2.6 — free, no vendor lock-in.
 
 Usage:
     python3 stabilize.py demo-app
@@ -267,6 +267,40 @@ def _restore(app_dir: Path, snapshot: dict[str, tuple]) -> None:
             os.chmod(app_dir / name, mode)
 
 
+# v2.6 verifies the restore instead of assuming it: after _restore,
+# the app tree is re-snapshotted and compared with the original. A
+# restore that cannot finish — e.g. a fixer-created directory that
+# cannot be removed because it holds cache artefacts the snapshot
+# excludes — used to be reported as restored=True anyway, the same
+# class of untrue claim v2.2–v2.5 closed for contents, shape, modes,
+# and special files. Now `restored` is True only when the comparison
+# is clean, and any leftover paths are named in `restore_mismatch`
+# so the failure can be fixed by hand instead of trusted blindly.
+# One documented exception: a snapshot socket or device node that a
+# fixer deleted cannot be recreated, so it is left absent by design
+# and does not count as a mismatch; a snapshot FIFO is recreated.
+def _restore_mismatches(app_dir: Path, snapshot: dict[str, tuple]) -> list[str]:
+    """Paths where the app tree still differs from `snapshot` after a
+    restore — missing, changed, or extra entries, sorted. An absent
+    snapshot socket/device node is not a mismatch (see note above)."""
+    try:
+        current = _snapshot(app_dir)
+    except Exception as exc:  # verification must never crash the report
+        return [f"restore verification failed: {exc}"]
+    mismatches: list[str] = []
+    for name, entry in snapshot.items():
+        if name not in current:
+            if entry[0] == "other" and entry[1] != stat.S_IFIFO:
+                continue
+            mismatches.append(name)
+        elif current[name] != entry:
+            mismatches.append(name)
+    for name in current:
+        if name not in snapshot:
+            mismatches.append(name)
+    return sorted(mismatches)
+
+
 def run_tests(app_dir: Path, timeout: int) -> tuple[int, str, str, bool]:
     """Run the FULL suite. Returns (returncode, stdout, stderr, timed_out)."""
     try:
@@ -383,15 +417,28 @@ def stabilize(
         print("Fix applied, re-running FULL suite...", file=sys.stderr)
 
     # Not stable: restore original code — never leave a downgrade behind.
-    _restore(app_dir, original)
-    return {
+    # The restore is then verified, not assumed: `restored` is True only
+    # if a fresh snapshot matches the original, and any leftover paths
+    # are named in `restore_mismatch` instead of silently claimed clean.
+    try:
+        _restore(app_dir, original)
+        restore_error = ""
+    except Exception as exc:  # a failed restore must still produce a report
+        restore_error = str(exc)
+        print(f"Restore error: {exc}", file=sys.stderr)
+    mismatches = _restore_mismatches(app_dir, original)
+    result: dict = {
         "stable": False,
         "attempts": len(attempts),
         "attempt_log": attempts,
         "failing": last_failure,
         "failure_detail": last_detail,
-        "restored": True,
+        "restored": not mismatches,
+        "restore_mismatch": mismatches,
     }
+    if restore_error:
+        result["restore_error"] = restore_error
+    return result
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -413,6 +460,10 @@ def main(argv: list[str] | None = None) -> int:
         print(f"STABLE VERSION PRODUCED! All tests passed after {result['attempts']} attempt(s).")
         return 0
     print(f"NOT STABLE. Original code restored: {result.get('restored')}.")
+    if result.get("restore_mismatch"):
+        print("WARNING: restore incomplete — still differing:")
+        for name in result["restore_mismatch"]:
+            print(f"  {name}")
     print(f"Failing: {result.get('failing') or result.get('error', 'unknown')}")
     if result.get("failure_detail"):
         print("Detail:")

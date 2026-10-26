@@ -59,6 +59,16 @@ python3 stabilize.py <app_dir> [--max-attempts 5] [--timeout 120]
   File and directory permission bits are snapshotted too, so a fixer
   that chmod'ed something cannot leave that change behind.
   Cache/VCS directories are excluded.
+- The restore is verified, not assumed: after restoring, the loop
+  re-snapshots the app and compares it with the original. The report
+  says `restored: true` only when that comparison is clean; if
+  anything is left over (e.g. a fixer-created directory that cannot
+  be removed because it holds only excluded cache artefacts), the
+  report says `restored: false` and names the leftover paths in
+  `restore_mismatch`, so the gap can be fixed by hand instead of
+  trusted blindly. (A snapshot socket or device node a fixer deleted
+  cannot be recreated, so it is left absent by design and does not
+  count as a mismatch.)
 - Every attempt runs the full suite, never just the failing test.
 - Each pytest run has a timeout, so a hanging test cannot hang the loop.
 - Exit codes: `0` = stable, `1` = could not stabilize (code restored),
@@ -70,7 +80,7 @@ python3 stabilize.py <app_dir> [--max-attempts 5] [--timeout 120]
 python3 -m pytest -q tests/
 ```
 
-11 tests: clean app passes first try, buggy app is fixed, an unfixable
+12 tests: clean app passes first try, buggy app is fixed, an unfixable
 app is restored unchanged with its failing test named, an unfixable
 report carries the error detail, a missing app dir is a usage error,
 a data-file-only fix counts and passes, a failed run restores
@@ -78,8 +88,10 @@ changed data files and deletes fixer-created files, a failed run
 restores a deleted empty directory and removes a fixer-created
 directory and symlink, a failed run restores a chmod'ed file's
 contents and its original permission bits, a failed run removes a
-fixer-created FIFO, and a failed run puts back a file a fixer
-replaced with a FIFO instead of hanging on the restore.
+fixer-created FIFO, a failed run puts back a file a fixer
+replaced with a FIFO instead of hanging on the restore, and a
+failed run whose restore cannot finish reports `restored: false`
+and names the leftover directory instead of claiming it restored.
 
 ## v1 → v2 changes
 
