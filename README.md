@@ -48,7 +48,13 @@ python3 stabilize.py <app_dir> [--max-attempts 5] [--timeout 120]
 
 ## Safety
 
-- Original code is snapshotted before any fix. On final failure it is restored.
+- Original code — every app file, directory, and symlink, not just
+  Python files — is snapshotted before any fix. On final failure it
+  is restored, and files, directories, and symlinks a fixer created
+  are deleted. Symlinks are recorded by target, never followed.
+  File and directory permission bits are snapshotted too, so a fixer
+  that chmod'ed something cannot leave that change behind.
+  Cache/VCS directories are excluded.
 - Every attempt runs the full suite, never just the failing test.
 - Each pytest run has a timeout, so a hanging test cannot hang the loop.
 - Exit codes: `0` = stable, `1` = could not stabilize (code restored),
@@ -60,9 +66,14 @@ python3 stabilize.py <app_dir> [--max-attempts 5] [--timeout 120]
 python3 -m pytest -q tests/
 ```
 
-4 tests: clean app passes first try, buggy app is fixed, an unfixable
-app is restored unchanged with its failing test named, and a missing
-app dir is a usage error.
+9 tests: clean app passes first try, buggy app is fixed, an unfixable
+app is restored unchanged with its failing test named, an unfixable
+report carries the error detail, a missing app dir is a usage error,
+a data-file-only fix counts and passes, a failed run restores
+changed data files and deletes fixer-created files, a failed run
+restores a deleted empty directory and removes a fixer-created
+directory and symlink, and a failed run restores a chmod'ed file's
+contents and its original permission bits.
 
 ## v1 → v2 changes
 

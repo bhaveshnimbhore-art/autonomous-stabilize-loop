@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Write-test-stabilize loop, v2 — free, no vendor lock-in.
+"""Write-test-stabilize loop, v2.4 — free, no vendor lock-in.
 
 Usage:
     python3 stabilize.py demo-app
@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -85,24 +86,125 @@ def run_fixer(app_dir: Path, error_log: str, fixer_script: str | None) -> bool:
     return _demo_fix(app_dir, error_log)
 
 
-def _snapshot(app_dir: Path) -> dict[str, bytes]:
-    out: dict[str, bytes] = {}
-    for path in sorted(app_dir.rglob("*.py")):
-        if "__pycache__" in path.parts or ".pytest_cache" in path.parts:
+# Directories whose contents are test-run / VCS artefacts, never app
+# content: snapshotting them would bloat the snapshot and restoring
+# them could fight the test runner or version control. Everything else
+# — .py, data, config, text, assets — is app content and is covered,
+# so a fixer that touches a non-Python file is judged and, on failure,
+# rolled back exactly like a .py change. (v2.1 snapshotted *.py only,
+# so a fixer changing e.g. data.txt left that change behind on failure
+# even though the report claimed the original code was restored.)
+#
+# v2.3 extends the same promise to the app's shape, not just its file
+# contents: the snapshot also records empty directories and symlinks.
+# v2.2 left both behind — a fixer that created an empty directory or a
+# symlink, or deleted an empty directory, survived the "restore", so
+# the app after a failed run was not the app the loop started with.
+#
+# v2.4 extends it to permission bits: the snapshot also records each
+# file and directory's mode. v2.3 restored contents and shape but not
+# modes — a fixer that chmod'ed a file (stripping its exec bit, or
+# making it world-writable) left that change behind, and a fixer that
+# made a file read-only could even break a later restore of its
+# contents. Modes now count as a change too, so a fixer that only
+# chmods is judged by a fresh full-suite run like any other fixer.
+# Entries are ("file", bytes, mode), ("dir", None, mode), or
+# ("link", target, None). Modes are the low permission bits only.
+_IGNORED_PARTS = {
+    "__pycache__",
+    ".pytest_cache",
+    ".git",
+    ".hg",
+    ".svn",
+    ".tox",
+    "node_modules",
+    ".venv",
+    "venv",
+}
+
+
+def _snapshot(app_dir: Path) -> dict[str, tuple]:
+    """Snapshot every app file, directory, and symlink, by relative path."""
+    out: dict[str, tuple] = {}
+    for path in sorted(app_dir.rglob("*")):
+        if _IGNORED_PARTS.intersection(path.parts):
             continue
-        out[str(path.relative_to(app_dir))] = path.read_bytes()
+        rel = str(path.relative_to(app_dir))
+        if path.is_symlink():
+            # Checked first: a symlink to a file also reports is_file(),
+            # and a broken symlink reports neither is_file() nor is_dir().
+            out[rel] = ("link", os.readlink(path), None)
+        elif path.is_dir():
+            out[rel] = ("dir", None, path.stat().st_mode & 0o777)
+        elif path.is_file():
+            out[rel] = ("file", path.read_bytes(), path.stat().st_mode & 0o777)
     return out
 
 
-def _restore(app_dir: Path, snapshot: dict[str, bytes]) -> None:
+def _restore(app_dir: Path, snapshot: dict[str, tuple]) -> None:
     current = _snapshot(app_dir)
+    # 1. Remove files and symlinks the fixer created (dirs last: a
+    #    created directory may still hold a created file at this point).
     for name in current:
-        if name not in snapshot:
+        if name not in snapshot and current[name][0] in ("file", "link"):
             (app_dir / name).unlink(missing_ok=True)
-    for name, data in snapshot.items():
+    # 2. Remove directories the fixer created, deepest first, only if
+    #    empty (they are, once step 1 removed their files).
+    for name in sorted(
+        (n for n in current if n not in snapshot and current[n][0] == "dir"),
+        key=lambda n: n.count("/"),
+        reverse=True,
+    ):
+        try:
+            (app_dir / name).rmdir()
+        except OSError:
+            pass
+    # 3. Put back everything from the snapshot, including directories
+    #    the fixer deleted and symlinks it replaced or removed. A path
+    #    that is currently a symlink must be unlinked before writing a
+    #    regular file, or write_bytes would follow it out of the app.
+    #    Directory modes are restored in two passes: here each restored
+    #    directory is made owner-writable first, so files and links the
+    #    fixer deleted can be recreated inside it even if the fixer
+    #    made it read-only; step 4 then sets the exact original mode.
+    #    Likewise a file the fixer made read-only is made writable
+    #    before it is overwritten, then set back to its original mode.
+    for name, (kind, data, mode) in snapshot.items():
         path = app_dir / name
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(data)
+        if kind == "dir":
+            if path.is_symlink() or path.is_file():
+                path.unlink()
+            path.mkdir(parents=True, exist_ok=True)
+            if mode is not None:
+                os.chmod(path, mode | 0o300)
+            continue
+        # A fixer may have replaced a file/symlink with a directory of
+        # the same name; by now its contents are removed, so it is
+        # empty and can be swapped back. (If it is not empty, rmdir
+        # fails and the write below fails loudly rather than deleting
+        # unknown content.)
+        if path.is_dir() and not path.is_symlink():
+            path.rmdir()
+        if kind == "link":
+            if path.is_symlink() and os.readlink(path) == data:
+                continue
+            if path.is_symlink() or path.exists():
+                path.unlink()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.symlink_to(data)
+        else:
+            if path.is_symlink():
+                path.unlink()
+            elif path.is_file():
+                os.chmod(path, 0o600)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(data)
+            if mode is not None:
+                os.chmod(path, mode)
+    # 4. Exact directory modes, now that their contents are back.
+    for name, (kind, data, mode) in snapshot.items():
+        if kind == "dir" and mode is not None:
+            os.chmod(app_dir / name, mode)
 
 
 def run_tests(app_dir: Path, timeout: int) -> tuple[int, str, str, bool]:
