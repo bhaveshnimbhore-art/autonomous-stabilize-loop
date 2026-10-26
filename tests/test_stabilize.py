@@ -191,6 +191,65 @@ def test_file_modes_restored_on_failure(tmp_path):
     assert (app / "app.py").stat().st_mode & 0o777 == 0o640
 
 
+def test_fixer_created_fifo_removed_on_failure(tmp_path):
+    # v2.4 recorded only files, directories, and symlinks, so a
+    # fixer-created FIFO survived the "restore" even though the
+    # report claimed the original code was restored.
+    app = tmp_path / "app"
+    app.mkdir()
+    (app / "app.py").write_text("def total(price, qty, tax_rate):\n    return 0\n")
+    (app / "test_app.py").write_text(
+        "from app import total\n\ndef test_total():\n    assert total(100, 2, 0.10) == 220\n"
+    )
+    original = (app / "app.py").read_text()
+    fixer = write_fixer(
+        tmp_path,
+        "import os\n"
+        "(app_dir / 'app.py').write_text('def total(price, qty, tax_rate):\\n    return 1\\n')\n"
+        "if not os.path.lexists(app_dir / 'pipe.fifo'):\n"
+        "    os.mkfifo(app_dir / 'pipe.fifo')\n",
+    )
+    result, data = run_loop(app, tmp_path, fixer_script=fixer)
+    assert result.returncode != 0
+    assert data["stable"] is False
+    assert data["restored"] is True
+    assert (app / "app.py").read_text() == original
+    assert not os.path.lexists(app / "pipe.fifo")
+
+
+def test_file_replaced_by_fifo_restored_on_failure(tmp_path):
+    # v2.4 hung here, not just leaked: restore tried to write_bytes()
+    # through the FIFO a fixer had put in place of app.py, which
+    # blocks forever waiting for a reader — no report, no restore.
+    # The loop must unlink the FIFO first and put the file back.
+    import stat
+
+    app = tmp_path / "app"
+    app.mkdir()
+    (app / "app.py").write_text("def total(price, qty, tax_rate):\n    return 0\n")
+    (app / "test_app.py").write_text(
+        "from app import total\n\ndef test_total():\n    assert total(100, 2, 0.10) == 220\n"
+    )
+    original = (app / "app.py").read_text()
+    fixer = write_fixer(
+        tmp_path,
+        "import os\n"
+        "if os.path.lexists(app_dir / 'app.py'):\n"
+        "    if (app_dir / 'app.py').is_dir() and not (app_dir / 'app.py').is_symlink():\n"
+        "        (app_dir / 'app.py').rmdir()\n"
+        "    else:\n"
+        "        os.unlink(app_dir / 'app.py')\n"
+        "os.mkfifo(app_dir / 'app.py')\n",
+    )
+    result, data = run_loop(app, tmp_path, fixer_script=fixer)
+    assert result.returncode != 0
+    assert data["stable"] is False
+    assert data["restored"] is True
+    assert (app / "app.py").is_file() and not (app / "app.py").is_symlink()
+    assert not stat.S_ISFIFO(os.lstat(app / "app.py").st_mode)
+    assert (app / "app.py").read_text() == original
+
+
 def test_missing_app_dir_is_usage_error(tmp_path):
     result = subprocess.run(
         [sys.executable, str(STABILIZE), str(tmp_path / "nope")],

@@ -48,10 +48,14 @@ python3 stabilize.py <app_dir> [--max-attempts 5] [--timeout 120]
 
 ## Safety
 
-- Original code — every app file, directory, and symlink, not just
-  Python files — is snapshotted before any fix. On final failure it
-  is restored, and files, directories, and symlinks a fixer created
-  are deleted. Symlinks are recorded by target, never followed.
+- Original code — every app file, directory, symlink, and special
+  file (FIFO, socket, device node), not just Python files — is
+  snapshotted before any fix. On final failure it is restored, and
+  files, directories, symlinks, and special files a fixer created
+  are deleted. Symlinks are recorded by target, never followed, and
+  special files are recorded by type and never opened — a file a
+  fixer replaced with a FIFO is unlinked before it is written back,
+  so the restore cannot hang waiting on the FIFO.
   File and directory permission bits are snapshotted too, so a fixer
   that chmod'ed something cannot leave that change behind.
   Cache/VCS directories are excluded.
@@ -66,14 +70,16 @@ python3 stabilize.py <app_dir> [--max-attempts 5] [--timeout 120]
 python3 -m pytest -q tests/
 ```
 
-9 tests: clean app passes first try, buggy app is fixed, an unfixable
+11 tests: clean app passes first try, buggy app is fixed, an unfixable
 app is restored unchanged with its failing test named, an unfixable
 report carries the error detail, a missing app dir is a usage error,
 a data-file-only fix counts and passes, a failed run restores
 changed data files and deletes fixer-created files, a failed run
 restores a deleted empty directory and removes a fixer-created
-directory and symlink, and a failed run restores a chmod'ed file's
-contents and its original permission bits.
+directory and symlink, a failed run restores a chmod'ed file's
+contents and its original permission bits, a failed run removes a
+fixer-created FIFO, and a failed run puts back a file a fixer
+replaced with a FIFO instead of hanging on the restore.
 
 ## v1 → v2 changes
 

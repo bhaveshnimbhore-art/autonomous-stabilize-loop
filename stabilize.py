@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Write-test-stabilize loop, v2.4 — free, no vendor lock-in.
+"""Write-test-stabilize loop, v2.5 — free, no vendor lock-in.
 
 Usage:
     python3 stabilize.py demo-app
@@ -29,6 +29,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -110,6 +111,17 @@ def run_fixer(app_dir: Path, error_log: str, fixer_script: str | None) -> bool:
 # chmods is judged by a fresh full-suite run like any other fixer.
 # Entries are ("file", bytes, mode), ("dir", None, mode), or
 # ("link", target, None). Modes are the low permission bits only.
+#
+# v2.5 extends it to non-regular entries: FIFOs, sockets, device
+# nodes. v2.4 recorded only files, directories, and symlinks, so a
+# fixer-created FIFO survived the "restore" (the report still claimed
+# the original code was restored), and a snapshot file replaced by a
+# FIFO was worse: restore tried to write_bytes() through the FIFO,
+# which blocks forever waiting for a reader — the loop hung with no
+# report at all. Entries for these are ("other", file_type, mode),
+# recorded by type via lstat and never opened or followed, so a
+# fixer-created one counts as a change and is removed on failure,
+# and a file replaced by one is unlinked before it is written back.
 _IGNORED_PARTS = {
     "__pycache__",
     ".pytest_cache",
@@ -124,7 +136,8 @@ _IGNORED_PARTS = {
 
 
 def _snapshot(app_dir: Path) -> dict[str, tuple]:
-    """Snapshot every app file, directory, and symlink, by relative path."""
+    """Snapshot every app entry — file, directory, symlink, or special
+    file (FIFO/socket/device) — by relative path."""
     out: dict[str, tuple] = {}
     for path in sorted(app_dir.rglob("*")):
         if _IGNORED_PARTS.intersection(path.parts):
@@ -138,15 +151,22 @@ def _snapshot(app_dir: Path) -> dict[str, tuple]:
             out[rel] = ("dir", None, path.stat().st_mode & 0o777)
         elif path.is_file():
             out[rel] = ("file", path.read_bytes(), path.stat().st_mode & 0o777)
+        else:
+            # FIFO, socket, device node, or anything else non-regular:
+            # recorded by type, never opened, read, or followed.
+            mode = os.lstat(path).st_mode
+            out[rel] = ("other", stat.S_IFMT(mode), mode & 0o777)
     return out
 
 
 def _restore(app_dir: Path, snapshot: dict[str, tuple]) -> None:
     current = _snapshot(app_dir)
-    # 1. Remove files and symlinks the fixer created (dirs last: a
-    #    created directory may still hold a created file at this point).
+    # 1. Remove files, symlinks, and special files the fixer created
+    #    (dirs last: a created directory may still hold a created
+    #    file at this point). Unlinking a FIFO/socket is safe; it is
+    #    never opened, so this cannot block.
     for name in current:
-        if name not in snapshot and current[name][0] in ("file", "link"):
+        if name not in snapshot and current[name][0] in ("file", "link", "other"):
             (app_dir / name).unlink(missing_ok=True)
     # 2. Remove directories the fixer created, deepest first, only if
     #    empty (they are, once step 1 removed their files).
@@ -172,7 +192,10 @@ def _restore(app_dir: Path, snapshot: dict[str, tuple]) -> None:
     for name, (kind, data, mode) in snapshot.items():
         path = app_dir / name
         if kind == "dir":
-            if path.is_symlink() or path.is_file():
+            # A snapshot directory replaced by a file, symlink, or
+            # special file (e.g. a FIFO) must be unlinked first, or
+            # mkdir(exist_ok=True) raises FileExistsError.
+            if path.is_symlink() or (os.path.lexists(path) and not path.is_dir()):
                 path.unlink()
             path.mkdir(parents=True, exist_ok=True)
             if mode is not None:
@@ -188,12 +211,49 @@ def _restore(app_dir: Path, snapshot: dict[str, tuple]) -> None:
         if kind == "link":
             if path.is_symlink() and os.readlink(path) == data:
                 continue
-            if path.is_symlink() or path.exists():
+            # A snapshot symlink replaced by a directory is swapped
+            # back (its created contents are already gone after
+            # steps 1-2); a special file is unlinked, never followed.
+            if path.is_dir() and not path.is_symlink():
+                path.rmdir()
+            elif path.is_symlink() or os.path.lexists(path):
                 path.unlink()
             path.parent.mkdir(parents=True, exist_ok=True)
             path.symlink_to(data)
+        elif kind == "other":
+            # A snapshot special file: never opened or followed. The
+            # same type already there is kept, with its mode put
+            # back. Anything else is removed; a FIFO is recreated
+            # (a socket or device node cannot be recreated by this
+            # loop, so it is left absent rather than faked with the
+            # wrong type).
+            if os.path.lexists(path):
+                if stat.S_IFMT(os.lstat(path).st_mode) == data:
+                    if mode is not None:
+                        os.chmod(path, mode)
+                    continue
+                try:
+                    if path.is_dir() and not path.is_symlink():
+                        path.rmdir()
+                    else:
+                        path.unlink()
+                except OSError:
+                    pass
+            if not os.path.lexists(path) and data == stat.S_IFIFO:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                os.mkfifo(path)
+                if mode is not None:
+                    os.chmod(path, mode)
+            continue
         else:
-            if path.is_symlink():
+            # A snapshot file replaced by a special file (FIFO,
+            # socket) must be unlinked before it is written: writing
+            # through a FIFO would block forever waiting for a
+            # reader, and writing through a device node could touch
+            # hardware. Directories were handled above.
+            if path.is_symlink() or (
+                os.path.lexists(path) and not path.is_dir() and not path.is_file()
+            ):
                 path.unlink()
             elif path.is_file():
                 os.chmod(path, 0o600)

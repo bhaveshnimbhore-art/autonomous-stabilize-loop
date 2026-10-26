@@ -1,5 +1,26 @@
 # Changelog
 
+## v2.5.0 — 2026-10-26
+
+- Safety fix, no behaviour change for passing runs: the snapshot and
+  restore now cover non-regular app entries — FIFOs, sockets, device
+  nodes — as well as files, directories, symlinks, and modes. Two
+  v2.4 holes are closed. A fixer-created FIFO used to survive the
+  "restore" while the report still claimed the original code was
+  restored; it is now removed, and creating one counts as a fixer
+  change, so it gets a fresh full-suite run like any other fix. And
+  a snapshot file replaced by a FIFO used to hang the restore
+  outright — restore tried to write through the FIFO, which blocks
+  forever waiting for a reader, so no report was ever produced. The
+  restore now unlinks a special file before writing a snapshot file
+  back, and a snapshot FIFO that a fixer deleted or replaced is
+  recreated (sockets and device nodes cannot be recreated, so a
+  replaced one is removed rather than faked with the wrong type).
+  Special files are recorded by type via lstat and are never opened
+  or followed. Two new tests prove both halves: a failed run removes
+  a fixer-created FIFO, and a failed run puts back a file a fixer
+  replaced with a FIFO instead of hanging.
+
 ## v2.4.0 — 2026-10-26
 
 - Safety fix, no behaviour change for passing runs: the snapshot and
